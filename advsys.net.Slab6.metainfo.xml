@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>advsys.net.Slab6</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>SLAB6</name>
+  <summary>Voxel model editor</summary>
+  <description>
+    <p>SLAB6 is a voxel model editor by Ken Silverman, the author of the Build engine. It edits models with a
+    256 color palette (up to 256x256x255 voxels) and reads and writes the KV6, KVX and VOX formats.</p>
+    <p>This package is a Linux port of the original Windows source code. The original license applies: free for
+    non-commercial use, with the author's name kept and modified versions marked as modified.</p>
+  </description>
+  <launchable type="desktop-id">advsys.net.Slab6.desktop</launchable>
+  <url type="homepage">http://advsys.net/ken</url>
+  <provides>
+    <binary>slab6</binary>
+  </provides>
+  <categories>
+    <category>Graphics</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="6.0-linux1" date="2026-11-18">
+      <description><p>First Linux/SDL2 port.</p></description>
+    </release>
+  </releases>
+</component>

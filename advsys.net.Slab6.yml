@@ -1,0 +1,54 @@
+# Flatpak manifest for the Linux port of SLAB6. Everything it compiles is in this folder.
+#   flatpak install flathub org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+#   flatpak-builder --user --install --force-clean build-dir org.example.Slab6.yml
+#   flatpak run org.example.Slab6                      (or: flatpak run org.example.Slab6 /1024x768 model.kv6)
+#
+# "org.example.Slab6" is a placeholder app id: rename it (and the three files named after it) to an id in a
+# namespace you control, e.g. io.github.<your user>.Slab6, before publishing anywhere.
+# runtime-version 25.08 also works; 24.08 is end of life.
+app-id: advsys.net.Slab6
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: slab6
+
+finish-args:
+  - --share=ipc                  # X11 shared memory
+  - --socket=x11                 # X11 (XWayland on Wayland): SLAB6 hands the mouse back at the window edge, which Wayland cannot do
+  - --device=dri                 # GPU for SDL's renderer (it falls back to software without it)
+  - --filesystem=xdg-documents   # where models are saved by default; any other place goes through the file chooser portal
+
+modules:
+  - name: slab6
+    buildsystem: simple
+    sources:
+      - {type: file, path: slab6.c}
+      - {type: file, path: sdlmain.cpp}
+      - {type: file, path: sysmain.h}
+      - {type: file, path: s6win.h}
+      - {type: file, path: s6long.h}
+      - {type: file, path: s6port.h}
+      - {type: file, path: s6menu.h}
+      - {type: file, path: s6filechooser.c}
+      - {type: file, path: s6clipimage.c}
+      - {type: file, path: slab6.sh}
+      - {type: file, path: advsys.net.Slab6.desktop}
+      - {type: file, path: advsys.net.Slab6.metainfo.xml}
+      - {type: file, path: advsys.net.Slab6.png}
+    build-commands:
+      # The editor. These flags are needed by the original code (see build.sh in the port for the reasons).
+      - >-
+        g++ -O2 -funsigned-char -fno-strict-aliasing -frounding-math -fwrapv -fpermissive -Wno-narrowing
+        -Wno-write-strings -std=gnu++14 -I. -x c++ slab6.c sdlmain.cpp -x none
+        $(sdl2-config --cflags --libs) -lm -o slab6-bin
+      # The file chooser helper: talks to the desktop's chooser through the portal (there is no zenity in the sandbox).
+      - gcc -O2 s6filechooser.c $(pkg-config --cflags --libs gio-2.0) -o slab6-filechooser
+      # Reads the clipboard image for Shift+Insert (SDL2 cannot): X11 selection + PNG/BMP decoding.
+      - gcc -O2 s6clipimage.c -lX11 -lz -o slab6-clipimage
+      - install -Dm755 slab6-bin ${FLATPAK_DEST}/bin/slab6-bin
+      - install -Dm755 slab6-filechooser ${FLATPAK_DEST}/bin/slab6-filechooser
+      - install -Dm755 slab6-clipimage ${FLATPAK_DEST}/bin/slab6-clipimage
+      - install -Dm755 slab6.sh ${FLATPAK_DEST}/bin/slab6
+      - install -Dm644 advsys.net.Slab6.desktop ${FLATPAK_DEST}/share/applications/advsys.net.Slab6.desktop
+      - install -Dm644 advsys.net.Slab6.metainfo.xml ${FLATPAK_DEST}/share/metainfo/advsys.net.Slab6.metainfo.xml
+      - install -Dm644 advsys.net.Slab6.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/advsys.net.Slab6.png

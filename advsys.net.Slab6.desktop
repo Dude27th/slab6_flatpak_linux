@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SLAB6
+GenericName=Voxel editor
+Comment=A 6-degree of freedom viewer and editor for KVX and VOX voxel files by Ken Silverman.
+Exec=slab6 %f
+Icon=advsys.net.Slab6
+Terminal=false
+Categories=Graphics;3DGraphics;
+Keywords=voxel;kv6;kvx;vox;3d;model;
+StartupWMClass=advsys.net.Slab6
+Name[es_MX]=Slab6
