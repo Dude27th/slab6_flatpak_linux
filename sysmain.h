@@ -52,6 +52,8 @@ extern void sdlmain_suspendinput (long on); //1: give the mouse back to the desk
 extern void sdlmain_pump (); //process window events (for modal loops such as the file selectors)
 extern long sdlmain_wantquit (); //nonzero once the program was asked to quit
 extern unsigned long sdlmain_peek (long x, long y); //ARGB of a pixel of the last presented frame (self-test)
+extern unsigned char *s6_uimask; //UI palette: same layout as the screen buffer; nonzero = UI pixel, value = UI color number
+extern void s6_setuipal (long k, long r, long g, long b); //define UI color k (8-bit RGB)
 #endif
 extern long cputype;
 

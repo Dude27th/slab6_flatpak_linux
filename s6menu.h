@@ -354,9 +354,9 @@ static void s6m_frame (long mx, long my, long *bst, long *obst) //per frame, rig
 
 	//---- drawing ------------------------------------------------------------------------------------
 
-static char s6m_rgb (long r, long g, long b) { return(closestcol[((r>>2)<<12)+((g>>2)<<6)+(b>>2)]); }
+static long s6m_rgb (long r, long g, long b) { return(uicolor(r,g,b)); } //UI palette color (separate from the voxel palette)
 
-static void s6m_rect (long x0, long y0, long x1, long y1, char col)
+static void s6m_rect (long x0, long y0, long x1, long y1, long col)
 {
 	long x, y;
 	char *p;
@@ -364,13 +364,13 @@ static void s6m_rect (long x0, long y0, long x1, long y1, char col)
 	if (y0 < 0) y0 = 0;
 	if (x1 > gdd.x) x1 = gdd.x;
 	if (y1 > gdd.y) y1 = gdd.y;
-	for(y=y0;y<y1;y++) { p = (char *)(gdd.f+y*gdd.p+x0); for(x=x0;x<x1;x++) *p++ = col; }
+	for(y=y0;y<y1;y++) { p = (char *)(gdd.f+y*gdd.p+x0); for(x=x0;x<x1;x++,p++) uipix(p,col); }
 }
 
 static void s6m_draw (long cx, long cy) //after the editor drew everything (cursor included)
 {
 	long i, c, k, x0, x1, y, rh, hl;
-	char bar, line, txt, hlbg, lbg, dis, chk;
+	long bar, line, txt, hlbg, lbg, dis, chk;
 
 	if ((gdd.x < 1) || (gdd.y < S6M_BARH)) return;
 	bar = s6m_rgb(36,36,52); line = s6m_rgb(100,100,130); txt = s6m_rgb(230,230,230);
@@ -383,8 +383,8 @@ static void s6m_draw (long cx, long cy) //after the editor drew everything (curs
 		s6m_barcell(i,&x0,&x1);
 		hl = ((s6m_active) && (s6m_sel[0] == i));
 		if (hl) s6m_rect(x0,0,x1,S6M_BARH-1,hlbg);
-		print6x8(x0+6,1,hl ? whitecol : txt,-1L,"%s",s6m_it[i].label);
-		if (s6m_it[i].mpos >= 0) s6m_rect(x0+6+s6m_it[i].mpos*6,8,x0+12+s6m_it[i].mpos*6,9,hl ? whitecol : txt);
+		print6x8(x0+6,1,hl ? UIWHITE : txt,-1L,"%s",s6m_it[i].label);
+		if (s6m_it[i].mpos >= 0) s6m_rect(x0+6+s6m_it[i].mpos*6,8,x0+12+s6m_it[i].mpos*6,9,hl ? UIWHITE : txt);
 	}
 	for(k=1;k<=s6m_depth;k++)
 	{
@@ -398,18 +398,18 @@ static void s6m_draw (long cx, long cy) //after the editor drew everything (curs
 			hl = (s6m_sel[k] == c);
 			if (hl) s6m_rect(s6m_bx0[k]+1,y,s6m_bx1[k]-1,y+rh,hlbg);
 			if (s6m_it[c].checked) s6m_rect(s6m_bx0[k]+4,y+3,s6m_bx0[k]+8,y+7,chk);
-			print6x8(s6m_bx0[k]+12,y+1,s6m_disabled(c) ? dis : (hl ? whitecol : txt),-1L,"%s",s6m_it[c].label);
-			if (s6m_it[c].mpos >= 0) s6m_rect(s6m_bx0[k]+12+s6m_it[c].mpos*6,y+8,s6m_bx0[k]+18+s6m_it[c].mpos*6,y+9,hl ? whitecol : txt);
-			if (s6m_it[c].hint[0]) print6x8(s6m_bx1[k]-(long)strlen(s6m_it[c].hint)*6-12,y+1,hl ? whitecol : dis,-1L,"%s",s6m_it[c].hint);
-			if (s6m_ispopup(c)) print6x8(s6m_bx1[k]-9,y+1,hl ? whitecol : txt,-1L,">");
+			print6x8(s6m_bx0[k]+12,y+1,s6m_disabled(c) ? dis : (hl ? UIWHITE : txt),-1L,"%s",s6m_it[c].label);
+			if (s6m_it[c].mpos >= 0) s6m_rect(s6m_bx0[k]+12+s6m_it[c].mpos*6,y+8,s6m_bx0[k]+18+s6m_it[c].mpos*6,y+9,hl ? UIWHITE : txt);
+			if (s6m_it[c].hint[0]) print6x8(s6m_bx1[k]-(long)strlen(s6m_it[c].hint)*6-12,y+1,hl ? UIWHITE : dis,-1L,"%s",s6m_it[c].hint);
+			if (s6m_ispopup(c)) print6x8(s6m_bx1[k]-9,y+1,hl ? UIWHITE : txt,-1L,">");
 			y += rh;
 		}
 	}
 	if ((s6m_active) || (cy < S6M_BARH)) //the editor's own crosshair would be hidden under the menu
 		for(i=-4;i<=4;i++)
 		{
-			if (((unsigned long)(cx+i) < (unsigned long)gdd.x) && ((unsigned long)cy < (unsigned long)gdd.y)) *(char *)(gdd.f+cy*gdd.p+cx+i) = whitecol;
-			if (((unsigned long)cx < (unsigned long)gdd.x) && ((unsigned long)(cy+i) < (unsigned long)gdd.y)) *(char *)(gdd.f+(cy+i)*gdd.p+cx) = whitecol;
+			if (((unsigned long)(cx+i) < (unsigned long)gdd.x) && ((unsigned long)cy < (unsigned long)gdd.y)) uipix((char *)(gdd.f+cy*gdd.p+cx+i),UIWHITE);
+			if (((unsigned long)cx < (unsigned long)gdd.x) && ((unsigned long)(cy+i) < (unsigned long)gdd.y)) uipix((char *)(gdd.f+(cy+i)*gdd.p+cx),UIWHITE);
 		}
 }
 

@@ -75,23 +75,36 @@ static SDL_Texture *gtex = 0;
 static unsigned char *fbuf = 0;
 static long fbpl = 0, fbx = 0, fby = 0;
 static Uint32 pal32[256];
+unsigned char *s6_uimask = 0; //parallel to fbuf (same pitch): nonzero = UI pixel (value = index into uipal32), see slab6.c uipix()
+static Uint32 uipal32[256];   //UI palette: independent of the voxel palette (pal32)
+void s6_setuipal (long k, long r, long g, long b)
+{
+	if ((k >= 0) && (k < 256)) uipal32[k] = 0xff000000u + ((Uint32)(r&255)<<16) + ((Uint32)(g&255)<<8) + (Uint32)(b&255);
+}
+static inline Uint32 pixargb (long x, long y) //final color of a screen pixel: UI pixels use the UI palette, the rest the voxel palette
+{
+	unsigned char m = (s6_uimask) ? s6_uimask[y*fbpl+x] : 0;
+	return(m ? uipal32[m] : pal32[fbuf[y*fbpl+x]]);
+}
 
 static int allocvideo (long x, long y)
 {
 	long pitch = ((x+7)&~7);
-	unsigned char *nb;
+	unsigned char *nb, *nm;
 	SDL_Texture *nt;
 	void *px; int tpitch;
 
 	if ((x < 1) || (y < 1)) return(0);
 	nb = (unsigned char *)calloc(pitch*y+256,1); //+256: slack, the SSE renderer may write past the end
 	if (!nb) return(0);
+	nm = (unsigned char *)calloc(pitch*y+256,1); //UI mask, same layout as nb
+	if (!nm) { free(nb); return(0); }
 	nt = SDL_CreateTexture(grend,SDL_PIXELFORMAT_ARGB8888,SDL_TEXTUREACCESS_STREAMING,(int)x,(int)y);
-	if (!nt) { free(nb); return(0); }
+	if (!nt) { free(nb); free(nm); return(0); }
 	if (SDL_LockTexture(nt,0,&px,&tpitch) == 0) { memset(px,0,(size_t)tpitch*(size_t)y); SDL_UnlockTexture(nt); }
 	if (gtex) SDL_DestroyTexture(gtex);
-	free(fbuf);
-	gtex = nt; fbuf = nb; fbpl = pitch; fbx = x; fby = y;
+	free(fbuf); free(s6_uimask);
+	gtex = nt; fbuf = nb; s6_uimask = nm; fbpl = pitch; fbx = x; fby = y;
 	return(1);
 }
 
@@ -122,6 +135,7 @@ long clearscreen (long fillcolor)
 {
 	if (!fbuf) return(0);
 	memset(fbuf,(int)(fillcolor&255),(size_t)(fbpl*fby));
+	if (s6_uimask) memset(s6_uimask,0,(size_t)(fbpl*fby));
 	return(1);
 }
 
@@ -136,7 +150,7 @@ static void dumpframe (const char *path)
 	for(y=0;y<fby;y++)
 		for(x=0;x<fbx;x++)
 		{
-			Uint32 c = pal32[fbuf[y*fbpl+x]];
+			Uint32 c = pixargb(x,y);
 			fputc((int)((c>>16)&255),fil); fputc((int)((c>>8)&255),fil); fputc((int)(c&255),fil);
 		}
 	fclose(fil);
@@ -151,9 +165,8 @@ void nextpage ()
 	{
 		for(y=0;y<fby;y++)
 		{
-			const unsigned char *s = &fbuf[y*fbpl];
 			Uint32 *d = (Uint32 *)((char *)px + (size_t)y*(size_t)tpitch);
-			for(x=0;x<fbx;x++) d[x] = pal32[s[x]];
+			for(x=0;x<fbx;x++) d[x] = pixargb(x,y);
 		}
 		SDL_UnlockTexture(gtex);
 	}
@@ -537,7 +550,9 @@ int main (int argc, char **argv)
 	if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS) < 0) { fatal(SDL_GetError()); return(-1); }
 	SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY,"nearest");
 
-	wflags = SDL_WINDOW_SHOWN;
+	//The window starts hidden: creating the renderer below makes SDL recreate an X11 window that wasn't made for OpenGL
+	//(SDL_RecreateWindow), and if the window were already visible it would pop up, vanish and pop up again at startup.
+	wflags = SDL_WINDOW_HIDDEN;
 	if (fullscreen) wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP; else if (progresiz) wflags |= SDL_WINDOW_RESIZABLE;
 	gwin = SDL_CreateWindow(prognam,SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,(int)xres,(int)yres,wflags);
 	if (!gwin) { fatal(SDL_GetError()); SDL_Quit(); return(-1); }
@@ -546,6 +561,7 @@ int main (int argc, char **argv)
 	if (!grend) { fatal(SDL_GetError()); SDL_DestroyWindow(gwin); SDL_Quit(); return(-1); }
 	if (fullscreen) SDL_RenderSetLogicalSize(grend,(int)xres,(int)yres); //scale xres*yres to the desktop
 	if (!allocvideo(xres,yres)) { fatal("could not allocate the video buffer"); SDL_Quit(); return(-1); }
+	SDL_ShowWindow(gwin); //renderer and video buffer are ready: show the window once
 
 	SDL_ShowCursor(SDL_DISABLE); //Windows version used wc.hCursor = 0
 	SDL_StartTextInput();

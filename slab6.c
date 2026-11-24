@@ -172,6 +172,7 @@ float hx, hy, hz, hds, sphk1, sphk2, sphk3;
 long ihx, ihy;
 long ylookup[MAXYDIM+1], lastx[MAXYDIM], slcol[3][256], pag;
 char whitecol, graycol, blackcol, backgroundcol = 0;
+long keepuicolors = 1; //Tools menu toggle (Linux port), ON by default: the UI/background use their own palette, separate from the voxel palette
 long backgroundcolrgb18 = 0x18618;
 long curcol = -1, curgamminterp = 1000;
 static char curfilnam[MAX_PATH];
@@ -517,6 +518,47 @@ static const __int64 font6x8[] = //256 DOS chars, from: DOSAPP.FON (tab blank)
 	0x2A08080000003F40,0x0012241224000808,0x0000000609090600,0x0008000000001818,
 	0x02023E4030000000,0x0900000E010E0100,0x3C3C3C0000000A0D,0x000000000000003C,
 };
+	//---- Linux port: UI palette, separate from the voxel palette ---------------------------------------------------
+	//The screen is one 8-bit paletted buffer, so the UI can't get its own colors just by using other indices. Instead each UI
+	//pixel is also flagged in a second buffer (s6_uimask: same layout as the screen, value = UI color number) and the SDL layer
+	//shows flagged pixels with a UI palette that voxel palettes can't touch. A UI color is a long with UIC set: UIBG (the
+	//background), UIBLACK, UIGRAY, UIWHITE or uicolor(r,g,b). A plain 0-255 value is a voxel palette index (never flagged).
+	//The background is palette index 255 (see initpal), which the model never draws with.
+#define UIC 0x100
+#define UIBG (UIC+0)
+#define UIBLACK (UIC+1)
+#define UIGRAY (UIC+2)
+#define UIWHITE (UIC+3)
+#define UIBGIDX (keepuicolors ? 255L : (long)(unsigned char)backgroundcol) //background index for code that draws into the screen buffer directly
+static char closestcol[262144];
+static long uirgb18[256], uinum = 4; //18-bit RGB of every UI color (0 = background: initpal keeps it current)
+static long uich; //UI color for drawline3d callers
+
+static long uicolor (long r, long g, long b) //8-bit RGB -> UI color; the same RGB always gives the same color
+{
+	long k, c = (((r>>2)&63)<<12)+(((g>>2)&63)<<6)+((b>>2)&63);
+	for(k=1;k<uinum;k++) if (uirgb18[k] == c) return(UIC+k);
+	if (uinum >= 256) return(UIWHITE);
+	k = uinum++; uirgb18[k] = c;
+	s6_setuipal(k,((c>>12)&63)<<2,((c>>6)&63)<<2,(c&63)<<2);
+	return(UIC+k);
+}
+
+static void uipix (char *p, long col) //write 1 screen pixel: a UI color (UIC set) or a plain voxel palette index
+{
+	intptr_t o = (intptr_t)p - (intptr_t)gdd.f;
+	unsigned char m = 0;
+	if (col & UIC)
+	{
+		m = (unsigned char)(col&255);
+		if (!m) *p = (char)UIBGIDX; //background
+		else *p = closestcol[uirgb18[m]]; //nearest voxel palette color: what a screen capture (F12) and the separate-palette-off mode show
+		if (!keepuicolors) m = 0;
+	}
+	else *p = (char)col;
+	if ((s6_uimask) && ((unsigned long)o < (unsigned long)(gdd.p*gdd.y))) s6_uimask[o] = m;
+}
+
 static void print6x8 (long ox, long y, long fcol, long bcol, const char *fmt, ...)
 {
 	va_list arglist;
@@ -535,8 +577,8 @@ static void print6x8 (long ox, long y, long fcol, long bcol, const char *fmt, ..
 			{
 				v = (char *)(((intptr_t)*c)*6 + (intptr_t)font6x8);
 				ie = min(gdd.x-x,6); cpx = &cp[x];
-				for(i=max(-x,0);i<ie;i++) { if (v[i]&j) cpx[i] = fcol; else if (bcol >= 0) cpx[i] = bcol; }
-				if ((*c) == 9) { if (bcol >= 0) for(i=6;i<18;i++) cpx[i] = bcol; x += 2*6; }
+				for(i=max(-x,0);i<ie;i++) { if (v[i]&j) uipix(&cpx[i],fcol); else if (bcol >= 0) uipix(&cpx[i],bcol); }
+				if ((*c) == 9) { if (bcol >= 0) for(i=6;i<18;i++) uipix(&cpx[i],bcol); x += 2*6; }
 			}
 }
 
@@ -672,7 +714,6 @@ void equivecuninit () { equimemset(0); }
 
 //EQUIVEC code ends -------------------------------------------------------
 
-static char closestcol[262144];
 void initclosestcolorfast (char *dapal)  //Fast approximate octahedron method
 {
 	long i, j, *clospos, *closend, *closcan;
@@ -2208,7 +2249,7 @@ void renderboundsphere ()
 	}
 }
 
-void drawline2d (float x1, float y1, float x2, float y2, char col)
+void drawline2d (float x1, float y1, float x2, float y2, long col)
 {
 	float dx, dy, fxresm1, fyresm1;
 	long i, j, incr, ie;
@@ -2230,7 +2271,7 @@ void drawline2d (float x1, float y1, float x2, float y2, char col)
 		ftol(1048576.0*dy/dx,&incr); ftol(y1*1048576.0+((float)i+.5f-x1)*incr,&j);
 		for(;i<=ie;i++,j+=incr)
 			if ((unsigned long)(j>>20) < (unsigned long)gdd.y)
-				*(char *)(ylookup[j>>20]+i+gdd.f) = col;
+				uipix((char *)(ylookup[j>>20]+i+gdd.f),col);
 	}
 	else
 	{
@@ -2238,12 +2279,12 @@ void drawline2d (float x1, float y1, float x2, float y2, char col)
 		ftol(1048576.0*dx/dy,&incr); ftol(x1*1048576.0+((float)i+.5f-y1)*incr,&j);
 		for(;i<=ie;i++,j+=incr)
 			if ((unsigned long)(j>>20) < (unsigned long)gdd.x)
-				*(char *)(ylookup[i]+(j>>20)+gdd.f) = col;
+				uipix((char *)(ylookup[i]+(j>>20)+gdd.f),col);
 	}
 }
 
 #define SCISSORDIST 1.0
-void drawline3d (float x0, float z0, float y0, float x1, float z1, float y1, char col)
+void drawline3d (float x0, float z0, float y0, float x1, float z1, float y1, long col)
 {
 	float ox, oy, oz, r;
 
@@ -2910,6 +2951,23 @@ void initpal (char *dapal)
 	graycol = closestcol[0x20820];
 	whitecol = closestcol[0x3ffff];
 	backgroundcol = closestcol[backgroundcolrgb18];
+
+		//Linux port: separate UI/background palette (see uipix). Palette index 255 means "no color" (initclosestcolorfast never returns it),
+		//so the model doesn't need it: it is kept free as the background index and displayed as the background color. Ken-style palettes
+		//can still reach 255 through their shade table, those shades use 254 instead (the neighboring shade). Voxel palette entries and
+		//voxel data are not changed in any way.
+	uirgb18[0] = backgroundcolrgb18; uirgb18[1] = 0x0; uirgb18[2] = 0x20820; uirgb18[3] = 0x3ffff;
+	for(k=0;k<4;k++) s6_setuipal(k,((uirgb18[k]>>12)&63)<<2,((uirgb18[k]>>6)&63)<<2,(uirgb18[k]&63)<<2);
+	if (keepuicolors)
+	{
+		for(i=0;i<64;i++)
+			for(j=0;j<256;j++)
+				if ((unsigned char)palookup[i][j] == 255) palookup[i][j] = (char)254;
+		pal[255].peRed = (char)(((backgroundcolrgb18>>12)&63)<<2);
+		pal[255].peGreen = (char)(((backgroundcolrgb18>>6)&63)<<2);
+		pal[255].peBlue = (char)((backgroundcolrgb18&63)<<2);
+		updatepalette(255,1);
+	}
 }
 
 void updatewindowborders ()
@@ -3593,6 +3651,16 @@ long loadvox (char *filnam)
 	FILE *fil;
 
 	if (!(fil = fopen(filnam,"rb"))) return(0);
+
+		//MagicaVoxel .vox files start with the ID "VOX " (then a version number). Voxlap .vox files have no ID: they
+		//start with xsiz,ysiz,zsiz, so a first dword of 0x20584f56 ("VOX ") would be an impossible xsiz. Refuse it.
+	if ((fread(&i,4,1,fil) == 1) && (i == 0x20584f56))
+	{
+		fclose(fil);
+		MessageBox(ghwnd,"MagicaVoxel (.vox) files are not compatible, only Voxlap (.vox) files are compatible with Slab6",prognam,MB_OK);
+		return(-1); //negative = failed, and the user has already been told why
+	}
+	rewind(fil);
 
 	fread(&xsiz,4,1,fil);
 	fread(&ysiz,4,1,fil);
@@ -4707,7 +4775,7 @@ void myfileselect_draw ()
 		strcat(tbuf,"  ");
 
 		if ((unsigned)(i-myfileselect_topplc) <= (unsigned)((gdd.y-7)>>3))
-			print6x8(0,(i-myfileselect_topplc)*8,whitecol,backgroundcol,"%s",tbuf);
+			print6x8(0,(i-myfileselect_topplc)*8,UIWHITE,UIBG,"%s",tbuf);
 	}
 }
 
@@ -4759,7 +4827,7 @@ char *myfileselect_input ()
 static long s6_dialogbegin ()
 {
 	if (!startdirectdraw(&gdd.f,&gdd.p,&gdd.x,&gdd.y)) return(0);
-	memset((void *)gdd.f,(unsigned char)backgroundcol,gdd.p*gdd.y);
+	memset((void *)gdd.f,(unsigned char)UIBGIDX,gdd.p*gdd.y); if (s6_uimask) memset(s6_uimask,0,gdd.p*gdd.y);
 	return(1);
 }
 static void s6_dialogend () { stopdirectdraw(); nextpage(); }
@@ -4793,7 +4861,7 @@ static char *s6_loadinapp (char *mess, char *spec, char *defext)
 		if (s6_dialogbegin())
 		{
 			myfileselect_draw();
-			print6x8(0,gdd.y-8,whitecol,blackcol,"%s  Up/Down=choose  Enter=open  Esc=cancel  %s",mess,menupath);
+			print6x8(0,gdd.y-8,UIWHITE,UIBLACK,"%s  Up/Down=choose  Enter=open  Esc=cancel  %s",mess,menupath);
 			s6_dialogend();
 		}
 	}
@@ -4856,15 +4924,15 @@ static char *s6_saveinapp (char *mess, char *spec, char *defext)
 		if (s6_dialogbegin())
 		{
 			top = max(min(hl-(rows>>1),menunamecnt-rows),0L);
-			print6x8(0,0,whitecol,backgroundcol,"%s",mess);
-			print6x8(0,12,whitecol,backgroundcol,"File name: %s_",name);
-			print6x8(0,24,graycol,backgroundcol,"Enter=save  Esc=cancel  Up/Down then Tab = pick a file or enter a folder   %s",menupath);
+			print6x8(0,0,UIWHITE,UIBG,"%s",mess);
+			print6x8(0,12,UIWHITE,UIBG,"File name: %s_",name);
+			print6x8(0,24,UIGRAY,UIBG,"Enter=save  Esc=cancel  Up/Down then Tab = pick a file or enter a folder   %s",menupath);
 			for(i=top;(i<menunamecnt) && (i<top+rows);i++)
 			{
 				const char *pre = (i == hl) ? "--> " : "    ";
 				if ((menufiletype[i>>3]&(1<<(i&7))) && ((menuptr[i][0] != '.') || (menuptr[i][1] != '.')))
-					print6x8(0,48+(i-top)*8,whitecol,backgroundcol,"%s%c%s",pre,S6_PATHSEP,menuptr[i]);
-				else print6x8(0,48+(i-top)*8,whitecol,backgroundcol,"%s%s",pre,menuptr[i]);
+					print6x8(0,48+(i-top)*8,UIWHITE,UIBG,"%s%c%s",pre,S6_PATHSEP,menuptr[i]);
+				else print6x8(0,48+(i-top)*8,UIWHITE,UIBG,"%s%s",pre,menuptr[i]);
 			}
 			s6_dialogend();
 		}
@@ -4939,6 +5007,8 @@ static int s6_pickhelper (char *exe, long size, int *usekde, int *useportal)
 	return(0);
 }
 
+static int s6_isdocportal (const char *dir);
+
 	//Returns 1: path in out, 0: cancelled, -1: no native dialog available (use the in-app one)
 static long s6_nativedialog (long save, const char *title, const char *spec, char *out, long outsize)
 {
@@ -4955,7 +5025,9 @@ static long s6_nativedialog (long save, const char *title, const char *spec, cha
 	if (!s6_pickhelper(exe,sizeof(exe),&usekde,&useportal)) return(-1);
 
 	if (!GetCurrentDirectory(sizeof(dir),dir)) strcpy(dir,"/");
-	snprintf(start,sizeof(start),"%s/%s",dir,save ? fileselectnam : "");
+	if ((useportal) && (s6_isdocportal(dir))) //a document portal folder (/run/user/UID/doc/ID) holds just the one file picked: don't start there,
+		snprintf(start,sizeof(start),"%s",save ? fileselectnam : ""); //the helper starts in the real folder of the last file instead
+	else snprintf(start,sizeof(start),"%s/%s",dir,save ? fileselectnam : "");
 	s6_filterlist(spec,pats,sizeof(pats));
 	if (!pats[0]) strcpy(pats,"*");
 
@@ -5003,8 +5075,8 @@ static long s6_nativedialog (long save, const char *title, const char *spec, cha
 		if ((cancel) || (sdlmain_wantquit())) { kill(pid,SIGTERM); cancel = 1; break; }
 		if (s6_dialogbegin())
 		{
-			print6x8(0,0,whitecol,backgroundcol,"%s",title);
-			print6x8(0,12,graycol,backgroundcol,"A file dialog is open in another window.   Esc = cancel");
+			print6x8(0,0,UIWHITE,UIBG,"%s",title);
+			print6x8(0,12,UIGRAY,UIBG,"A file dialog is open in another window.   Esc = cancel");
 			s6_dialogend();
 		}
 	}
@@ -5019,9 +5091,9 @@ static long s6_nativedialog (long save, const char *title, const char *spec, cha
 	return((WIFEXITED(status)) && (WEXITSTATUS(status) == 0) && (len > 0));
 }
 
-static int s6_isdocportal (const char *dir) //folders the Flatpak document portal creates: /run/user/UID/doc/ID
+static int s6_isdocportal (const char *dir) //folders the Flatpak document portal creates: /run/user/UID/doc/ID (shown as /run/flatpak/doc/ID once the working directory is read back)
 {
-	return((!strncmp(dir,"/run/user/",10)) && (strstr(dir,"/doc/") != 0));
+	return((!strncmp(dir,"/run/flatpak/doc/",17)) || ((!strncmp(dir,"/run/user/",10)) && (strstr(dir,"/doc/") != 0)));
 }
 
 	//Make a chosen path usable like the Windows dialog's result: go to its folder, return the bare name
@@ -5134,6 +5206,7 @@ void draw2dslice (long w)
 	long i, x, y, z, xx, yy, zz, x0, y0, x1, y1, daz;
 	long bx, by, startx, dax0, day0, dax1, day1, dainc;
 	char ch, col, *ptr, dabuf[64];
+	long ucol;
 	voxtype *ptr2;
 
 	x0 = wx0[w]; y0 = wy0[w];
@@ -5157,11 +5230,11 @@ void draw2dslice (long w)
 		}
 		if (((unsigned)curcol < 256) && (inawindow == 3) && (edit2dmode))
 		{
-			print6x8(x0     ,y0-8,whitecol           ,-1,"%3d:",curcol);
+			print6x8(x0     ,y0-8,UIWHITE           ,-1,"%3d:",curcol);
 			print6x8(x0+ 5*6,y0-8,closestcol[0x3f7df],-1,"%2d",fipalette[curcol*3  ]);
 			print6x8(x0+ 8*6,y0-8,closestcol[0x1ffdf],-1,"%2d",fipalette[curcol*3+1]);
 			print6x8(x0+11*6,y0-8,closestcol[0x1f7ff],-1,"%2d",fipalette[curcol*3+2]);
-			print6x8(x0+14*6,y0-8,whitecol           ,-1,"GAMMA:%d.%d",curgamminterp/1000,(curgamminterp/100)%10);
+			print6x8(x0+14*6,y0-8,UIWHITE           ,-1,"GAMMA:%d.%d",curgamminterp/1000,(curgamminterp/100)%10);
 
 			x1 = min((32<<daz)+x0,gdd.x); x0 = max(x0+24*6,0);
 			for(yy=y0-8;yy<y0-1;yy++)
@@ -5172,44 +5245,42 @@ void draw2dslice (long w)
 		return;
 	}
 
-	if ((long)pal[backgroundcol].peRed +
-		 (long)pal[backgroundcol].peGreen +
-		 (long)pal[backgroundcol].peBlue < 128*3)
-		col = whitecol; else col = blackcol;
+	if ((((backgroundcolrgb18>>12)&63) + ((backgroundcolrgb18>>6)&63) + (backgroundcolrgb18&63)) < 96)
+		ucol = UIWHITE; else ucol = UIBLACK;
 	  //Draw border around window
 	for(xx=wx0[w]-1;xx<=wx1[w];xx++)
 	{
 		yy = wy0[w]-1;
 		if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-			*(char *)(gdd.f+ylookup[yy]+xx) = col;
+			uipix((char *)(gdd.f+ylookup[yy]+xx),ucol);
 		yy = wy1[w];
 		if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-			*(char *)(gdd.f+ylookup[yy]+xx) = col;
+			uipix((char *)(gdd.f+ylookup[yy]+xx),ucol);
 	}
 	for(yy=wy0[w];yy<wy1[w];yy++)
 	{
 		xx = wx0[w]-1;
 		if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-			*(char *)(gdd.f+ylookup[yy]+xx) = col;
+			uipix((char *)(gdd.f+ylookup[yy]+xx),ucol);
 		xx = wx1[w];
 		if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-			*(char *)(gdd.f+ylookup[yy]+xx) = col;
+			uipix((char *)(gdd.f+ylookup[yy]+xx),ucol);
 	}
 
-	if (col == whitecol)
+	if (ucol == UIWHITE)
 	{
 		  //Draw border around window
 		for(xx=wx0[w];xx<=wx1[w];xx++)
 		{
 			yy = wy1[w]+1;
 			if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-				*(char *)(gdd.f+ylookup[yy]+xx) = blackcol;
+				uipix((char *)(gdd.f+ylookup[yy]+xx),UIBLACK);
 		}
 		for(yy=wy0[w]+1;yy<=wy1[w]+1;yy++)
 		{
 			xx = wx1[w]+1;
 			if (((unsigned)xx < (unsigned)gdd.x) && ((unsigned)yy < (unsigned)gdd.y))
-				*(char *)(gdd.f+ylookup[yy]+xx) = blackcol;
+				uipix((char *)(gdd.f+ylookup[yy]+xx),UIBLACK);
 		}
 	}
 
@@ -5221,9 +5292,9 @@ void draw2dslice (long w)
 
 	if (adjustpivotmode)
 	{
-		print6x8(0,16,whitecol,-1,"Xpiv:%.2f/%d",xpiv,xsiz);
-		print6x8(0,24,whitecol,-1,"Ypiv:%.2f/%d",ypiv,ysiz);
-		print6x8(0,32,whitecol,-1,"Zpiv:%.2f/%d",zpiv,zsiz);
+		print6x8(0,16,UIWHITE,-1,"Xpiv:%.2f/%d",xpiv,xsiz);
+		print6x8(0,24,UIWHITE,-1,"Ypiv:%.2f/%d",ypiv,ysiz);
+		print6x8(0,32,UIWHITE,-1,"Zpiv:%.2f/%d",zpiv,zsiz);
 	}
 
 	switch(w)
@@ -5232,7 +5303,7 @@ void draw2dslice (long w)
 		case 1: sprintf(dabuf,"Y:%d/%d",viewy,ysiz); break;
 		case 2: sprintf(dabuf,"X:%d/%d",viewx,xsiz); break;
 	}
-	print6x8(x0,y0-8,whitecol,-1,"%s",dabuf);
+	print6x8(x0,y0-8,UIWHITE,-1,"%s",dabuf);
 
 	if ((dax0 >= dax1) || (day0 >= day1)) return;
 	viewx = max(min(viewx,xsiz-1),0);
@@ -5252,7 +5323,7 @@ void draw2dslice (long w)
 						if (!(bx&65535))
 						{
 intoslicex:;         i = ((bx>>16)*MAXYSIZ+(by>>16))*BUFZSIZ+viewz;
-							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = backgroundcol;
+							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = (char)UIBGIDX;
 							else
 							{
 								ptr2 = getvptr(bx>>16,by>>16,viewz);
@@ -5277,7 +5348,7 @@ intoslicex:;         i = ((bx>>16)*MAXYSIZ+(by>>16))*BUFZSIZ+viewz;
 						if (!(bx&65535))
 						{
 intoslicey:;         i = ((bx>>16)*MAXYSIZ+viewy)*BUFZSIZ+(by>>16);
-							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = backgroundcol;
+							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = (char)UIBGIDX;
 							else
 							{
 								ptr2 = getvptr(bx>>16,viewy,by>>16);
@@ -5302,7 +5373,7 @@ intoslicey:;         i = ((bx>>16)*MAXYSIZ+viewy)*BUFZSIZ+(by>>16);
 						if (!(bx&65535))
 						{
 intoslicez:;         i = (viewx*MAXYSIZ+(bx>>16))*BUFZSIZ+(by>>16);
-							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = backgroundcol;
+							if (vbit[i>>5]&(1<<(i&31))) ocol[x] = (char)UIBGIDX;
 							else
 							{
 								ptr2 = getvptr(viewx,bx>>16,by>>16);
@@ -5978,7 +6049,7 @@ enum
 	RENDERMETHOD,
 	INVERTMOUSEY=RENDERMETHOD+6,
 	CONVERTPALETTE,CONVERTPALETTEANDCOLORS,HOLLOWFILL,OPTIMIZEDIMEN,DOMIRROR,
-	BRIGHTENCOLS,DARKENCOLS,BURNSHADEDCOLS,ADJUSTPIVOTMODE,SETASDEFAULTORIENT,MIRRORFLIP,DOUBLESIZE,HALVESIZE,
+	BRIGHTENCOLS,DARKENCOLS,BURNSHADEDCOLS,KEEPUICOLS,ADJUSTPIVOTMODE,SETASDEFAULTORIENT,MIRRORFLIP,DOUBLESIZE,HALVESIZE,
 	SPRAYHZ,BRUSHRAD=SPRAYHZ+8,
 	HELPABOUT=BRUSHRAD+12
 };
@@ -6201,6 +6272,14 @@ static long mymenufunc (WPARAM wparam, LPARAM lparam)
 							  else sprintf(message,"MOUSE Y NOT INVERTED");
 			messagetimeout = dtotclk+4.0;
 			CheckMenuItem(gmenu,INVERTMOUSEY,(-(mouseymul<0))&MF_CHECKED);
+			break;
+		case KEEPUICOLS:
+			keepuicolors = !keepuicolors;
+			initpal(fipalette);
+			CheckMenuItem(gmenu,KEEPUICOLS,(-(keepuicolors!=0))&MF_CHECKED);
+			if (keepuicolors) strcpy(message,"UI/BACKGROUND USE THEIR OWN PALETTE");
+						 else strcpy(message,"UI/BACKGROUND SHARE THE VOXEL PALETTE");
+			readklock(&dtotclk); messagetimeout = dtotclk+4.0;
 			break;
 		case CONVERTPALETTE: case CONVERTPALETTEANDCOLORS:
 			{
@@ -6738,6 +6817,7 @@ static void mymenuinit ()
 	sptr = menuadd(sptr,""                       ,MF_SEPARATOR     ,0);
 	sptr = menuadd(sptr,"Replace palette"        ,0                ,CONVERTPALETTE);
 	sptr = menuadd(sptr,"Replace palette and convert colors",0     ,CONVERTPALETTEANDCOLORS);
+	sptr = menuadd(sptr,"Separate UI/background palette",MF_CHECKED,KEEPUICOLS);
 	sptr = menuadd(sptr,"Brighten colors (2x)"   ,0                ,BRIGHTENCOLS);
 	sptr = menuadd(sptr,"Darken colors (2x)"     ,0                ,DARKENCOLS);
 	sptr = menuadd(sptr,"Burn shaded colors"     ,MF_END           ,BURNSHADEDCOLS);
@@ -6880,6 +6960,7 @@ long initapp (long argc, char **argv)
 		else if (!stricmp(&curfilnam[k],".kvx")) { i = loadkvx(curfilnam); }
 		else if (!stricmp(&curfilnam[k],".vox")) { i = loadvox(curfilnam); }
 		else if (!stricmp(&curfilnam[k],".kv6")) { i = loadkv6(curfilnam); }
+		if (i < 0) return(-1); //loadvox refused a MagicaVoxel file and already showed a message
 		if (!i)
 		{
 			MessageBox(ghwnd,"File not found!",prognam,MB_OK);
@@ -6956,7 +7037,7 @@ void doframe ()
 		resetwindowborders();
 	}
 
-	memset((void *)gdd.f,backgroundcol,gdd.y*gdd.p);
+	memset((void *)gdd.f,(unsigned char)UIBGIDX,gdd.y*gdd.p); if (s6_uimask) memset(s6_uimask,0,gdd.y*gdd.p);
 
 	vptr = 0;
 	if (searchmode)
@@ -7025,34 +7106,34 @@ void doframe ()
 	if (edit2dmode)
 	{
 //---------------------------------------------------------------------------
-		if (adjustpivotmode) { x = xpiv; y = ypiv; z = zpiv; ch = (rand()&255); }
-							 else { x = viewx; y = viewy; z = viewz; ch = whitecol; }
+		if (adjustpivotmode) { x = xpiv; y = ypiv; z = zpiv; uich = (rand()&255); }
+							 else { x = viewx; y = viewy; z = viewz; uich = UIWHITE; }
 		if (inawindow == 0)
 		{
-			drawline3d(   0,   0,z,xsiz,   0,z,ch);
-			drawline3d(xsiz,   0,z,xsiz,ysiz,z,ch);
-			drawline3d(xsiz,ysiz,z,   0,ysiz,z,ch);
-			drawline3d(   0,ysiz,z,   0,   0,z,ch);
+			drawline3d(   0,   0,z,xsiz,   0,z,uich);
+			drawline3d(xsiz,   0,z,xsiz,ysiz,z,uich);
+			drawline3d(xsiz,ysiz,z,   0,ysiz,z,uich);
+			drawline3d(   0,ysiz,z,   0,   0,z,uich);
 		}
 		if (inawindow == 1)
 		{
-			drawline3d(   0,y,   0,xsiz,y,   0,ch);
-			drawline3d(xsiz,y,   0,xsiz,y,zsiz,ch);
-			drawline3d(xsiz,y,zsiz,   0,y,zsiz,ch);
-			drawline3d(   0,y,zsiz,   0,y,   0,ch);
+			drawline3d(   0,y,   0,xsiz,y,   0,uich);
+			drawline3d(xsiz,y,   0,xsiz,y,zsiz,uich);
+			drawline3d(xsiz,y,zsiz,   0,y,zsiz,uich);
+			drawline3d(   0,y,zsiz,   0,y,   0,uich);
 		}
 		if (inawindow == 2)
 		{
-			drawline3d(x,   0,   0,x,ysiz,   0,ch);
-			drawline3d(x,ysiz,   0,x,ysiz,zsiz,ch);
-			drawline3d(x,ysiz,zsiz,x,   0,zsiz,ch);
-			drawline3d(x,   0,zsiz,x,   0,   0,ch);
+			drawline3d(x,   0,   0,x,ysiz,   0,uich);
+			drawline3d(x,ysiz,   0,x,ysiz,zsiz,uich);
+			drawline3d(x,ysiz,zsiz,x,   0,zsiz,uich);
+			drawline3d(x,   0,zsiz,x,   0,   0,uich);
 		}
 		if ((unsigned long)inawindow < 3)
 		{
-			drawline3d(x,y,0,x,y,zsiz,ch);
-			drawline3d(x,0,z,x,ysiz,z,ch);
-			drawline3d(0,y,z,xsiz,y,z,ch);
+			drawline3d(x,y,0,x,y,zsiz,uich);
+			drawline3d(x,0,z,x,ysiz,z,uich);
+			drawline3d(0,y,z,xsiz,y,z,uich);
 		}
 //---------------------------------------------------------------------------
 		for(i=numwindows-1;i>=0;i--)
@@ -7095,8 +7176,7 @@ void doframe ()
 	for(y=min(copy1,gdd.y)-1;y>=0;y--)
 		for(x=max(0,copx1-gdd.x);x<copx1;x++)
 		{
-			if (copbuf[x][y] < 0) ch = blackcol; else ch = copbuf[x][y];
-			*(char *)(ylookup[y]+x+gdd.x-copx1+gdd.f) = ch;
+			uipix((char *)(ylookup[y]+x+gdd.x-copx1+gdd.f),(copbuf[x][y] < 0) ? (long)UIBLACK : (long)(unsigned char)copbuf[x][y]);
 		}
 
 		//Draw dotted line rectangle
@@ -7113,26 +7193,26 @@ void doframe ()
 			if (x0 > x1) { i = x0; x0 = x1; x1 = i; }
 			if (y0 > y1) { i = y0; y0 = y1; y1 = i; }
 
-			print6x8(0,64,whitecol,-1,"Selected rectangle: %d x %d",((x1-x0)>>wz[copwindow])+1,((y1-y0)>>wz[copwindow])+1);
+			print6x8(0,64,UIWHITE,-1,"Selected rectangle: %d x %d",((x1-x0)>>wz[copwindow])+1,((y1-y0)>>wz[copwindow])+1);
 
 			x0--; x1 += (1<<wz[copwindow]);
 			y0--; y1 += (1<<wz[copwindow]);
 
 			for(x=x0,y=y0;x<=x1;x++,j++)
 				if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-					*(char *)(ylookup[y]+gdd.f+x) = (((whitecol-blackcol)&(((j&4)<<29)>>31))^blackcol);
+					uipix((char *)(ylookup[y]+gdd.f+x),(((j&4)<<29)>>31) ? (long)UIWHITE : (long)UIBLACK);
 
 			for(x=x1,y=y0+1;y<=y1;y++,j++)
 				if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-					*(char *)(ylookup[y]+gdd.f+x) = (((whitecol-blackcol)&(((j&4)<<29)>>31))^blackcol);
+					uipix((char *)(ylookup[y]+gdd.f+x),(((j&4)<<29)>>31) ? (long)UIWHITE : (long)UIBLACK);
 
 			for(x=x1-1,y=y1;x>=x0;x--,j++)
 				if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-					*(char *)(ylookup[y]+gdd.f+x) = (((whitecol-blackcol)&(((j&4)<<29)>>31))^blackcol);
+					uipix((char *)(ylookup[y]+gdd.f+x),(((j&4)<<29)>>31) ? (long)UIWHITE : (long)UIBLACK);
 
 			for(x=x0,y=y1-1;y>y0;y--,j++)
 				if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-					*(char *)(ylookup[y]+gdd.f+x) = (((whitecol-blackcol)&(((j&4)<<29)>>31))^blackcol);
+					uipix((char *)(ylookup[y]+gdd.f+x),(((j&4)<<29)>>31) ? (long)UIWHITE : (long)UIBLACK);
 		}
 	}
 
@@ -7143,7 +7223,7 @@ void doframe ()
 	d = frameval[0];
 	for(j=AVERAGEFRAMES-1;j>0;j--) d = max(d,frameval[j]);
 	averagefps = ((averagefps*3.0+d)*.25);
-	print6x8(gdd.x-68,S6M_TOPY,closestcol[262143],-1L,"%7.1f FPS",averagefps);
+	print6x8(gdd.x-68,S6M_TOPY,UIWHITE,-1L,"%7.1f FPS",averagefps);
 
 	a1 = a2 = a3 = 0;
 	if ((!(bstatus&1)) || (inawindow >= 0))
@@ -7200,29 +7280,29 @@ void doframe ()
 		{
 			x = searchx+((j&1)<<2)-2; y = searchy+(j&2)-1;
 			if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-				*(char *)(gdd.f+ylookup[y]+x) = blackcol;
+				uipix((char *)(gdd.f+ylookup[y]+x),UIBLACK);
 			x = searchx+((j&1)<<3)-4; y += ((j&2)<<2)-4;
 			if (((unsigned long)x < gdd.x) && ((unsigned long)y < gdd.y))
-				*(char *)(gdd.f+ylookup[y]+x) = blackcol;
+				uipix((char *)(gdd.f+ylookup[y]+x),UIBLACK);
 			for(i=4;i>1;i--)
 			{
 				if (j&1) x = searchx+i; else x = searchx-i;
 				if (j&2) y = searchy+i; else y = searchy-i;
 				if ((unsigned long)y < gdd.y)
 				{
-					if ((unsigned long)x     < gdd.x) *(char *)(gdd.f+ylookup[y]+x  ) = whitecol;
-					if ((unsigned long)(x+1) < gdd.x) *(char *)(gdd.f+ylookup[y]+x+1) = blackcol;
-					if ((unsigned long)(x-1) < gdd.x) *(char *)(gdd.f+ylookup[y]+x-1) = blackcol;
+					if ((unsigned long)x     < gdd.x) uipix((char *)(gdd.f+ylookup[y]+x  ),UIWHITE);
+					if ((unsigned long)(x+1) < gdd.x) uipix((char *)(gdd.f+ylookup[y]+x+1),UIBLACK);
+					if ((unsigned long)(x-1) < gdd.x) uipix((char *)(gdd.f+ylookup[y]+x-1),UIBLACK);
 				}
 			}
 		}
 #else
 		for(i=2;i<=4;i++)
 		{
-			if (searchx+i < gdd.x) *(char *)(gdd.f+ylookup[searchy]+searchx+i) = whitecol;
-			if (searchx-i >=    0) *(char *)(gdd.f+ylookup[searchy]+searchx-i) = whitecol;
-			if (searchy+i < gdd.y) *(char *)(gdd.f+ylookup[searchy+i]+searchx) = whitecol;
-			if (searchy-i >=    0) *(char *)(gdd.f+ylookup[searchy-i]+searchx) = whitecol;
+			if (searchx+i < gdd.x) uipix((char *)(gdd.f+ylookup[searchy]+searchx+i),UIWHITE);
+			if (searchx-i >=    0) uipix((char *)(gdd.f+ylookup[searchy]+searchx-i),UIWHITE);
+			if (searchy+i < gdd.y) uipix((char *)(gdd.f+ylookup[searchy+i]+searchx),UIWHITE);
+			if (searchy-i >=    0) uipix((char *)(gdd.f+ylookup[searchy-i]+searchx),UIWHITE);
 		}
 #endif
 	}
@@ -7241,33 +7321,33 @@ void doframe ()
 				{
 					switch(j*2+i)
 					{
-						case -3: if ((x >=ox+xx) || (y >=oy+yy)) ch = whitecol; else ch = graycol; break;
-						case -2: if ((x < ox   ) || (y >=oy+yy)) ch = whitecol; else ch = graycol; break;
-						case -1: if ((x >=ox+xx) || (y < oy   )) ch = whitecol; else ch = graycol; break;
-						case  0: if ((x < ox   ) || (y < oy   )) ch = whitecol; else ch = graycol; break;
+						case -3: if ((x >=ox+xx) || (y >=oy+yy)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -2: if ((x < ox   ) || (y >=oy+yy)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -1: if ((x >=ox+xx) || (y < oy   )) uich = UIWHITE; else uich = UIGRAY; break;
+						case  0: if ((x < ox   ) || (y < oy   )) uich = UIWHITE; else uich = UIGRAY; break;
 					}
-					if ((ch == whitecol) == k)
-						drawline3d(ox+(xx&i)-.5,oy+(yy&j)-.5,oz       -.5,ox+(xx&i)-.5,oy+(yy&j)-.5,oz+ zz   -.5,ch);
+					if ((uich == UIWHITE) == k)
+						drawline3d(ox+(xx&i)-.5,oy+(yy&j)-.5,oz       -.5,ox+(xx&i)-.5,oy+(yy&j)-.5,oz+ zz   -.5,uich);
 
 					switch(j*2+i)
 					{
-						case -3: if ((x >=ox+xx) || (z >=oz+zz)) ch = whitecol; else ch = graycol; break;
-						case -2: if ((x < ox   ) || (z >=oz+zz)) ch = whitecol; else ch = graycol; break;
-						case -1: if ((x >=ox+xx) || (z < oz   )) ch = whitecol; else ch = graycol; break;
-						case  0: if ((x < ox   ) || (z < oz   )) ch = whitecol; else ch = graycol; break;
+						case -3: if ((x >=ox+xx) || (z >=oz+zz)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -2: if ((x < ox   ) || (z >=oz+zz)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -1: if ((x >=ox+xx) || (z < oz   )) uich = UIWHITE; else uich = UIGRAY; break;
+						case  0: if ((x < ox   ) || (z < oz   )) uich = UIWHITE; else uich = UIGRAY; break;
 					}
-					if ((ch == whitecol) == k)
-						drawline3d(ox+(xx&i)-.5,oy       -.5,oz+(zz&j)-.5,ox+(xx&i)-.5,oy+ yy   -.5,oz+(zz&j)-.5,ch);
+					if ((uich == UIWHITE) == k)
+						drawline3d(ox+(xx&i)-.5,oy       -.5,oz+(zz&j)-.5,ox+(xx&i)-.5,oy+ yy   -.5,oz+(zz&j)-.5,uich);
 
 					switch(j*2+i)
 					{
-						case -3: if ((y >=oy+yy) || (z >=oz+zz)) ch = whitecol; else ch = graycol; break;
-						case -2: if ((y < oy   ) || (z >=oz+zz)) ch = whitecol; else ch = graycol; break;
-						case -1: if ((y >=oy+yy) || (z < oz   )) ch = whitecol; else ch = graycol; break;
-						case  0: if ((y < oy   ) || (z < oz   )) ch = whitecol; else ch = graycol; break;
+						case -3: if ((y >=oy+yy) || (z >=oz+zz)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -2: if ((y < oy   ) || (z >=oz+zz)) uich = UIWHITE; else uich = UIGRAY; break;
+						case -1: if ((y >=oy+yy) || (z < oz   )) uich = UIWHITE; else uich = UIGRAY; break;
+						case  0: if ((y < oy   ) || (z < oz   )) uich = UIWHITE; else uich = UIGRAY; break;
 					}
-					if ((ch == whitecol) == k)
-						drawline3d(ox       -.5,oy+(yy&i)-.5,oz+(zz&j)-.5,ox+ xx   -.5,oy+(yy&i)-.5,oz+(zz&j)-.5,ch);
+					if ((uich == UIWHITE) == k)
+						drawline3d(ox       -.5,oy+(yy&i)-.5,oz+(zz&j)-.5,ox+ xx   -.5,oy+(yy&i)-.5,oz+(zz&j)-.5,uich);
 				}
 
 		if (corngrab&1) ox = corn[1].x; else ox = corn[0].x;
@@ -7285,7 +7365,7 @@ void doframe ()
 			j = rand(); r0.z = ((float)(j-16384))/16384.0;
 			fcossin(((float)j)*2.399963229728654,&r0.x,&r0.y);
 			f = sqrt(1.0 - r0.z*r0.z)*.5; r0.x *= f; r0.y *= f; r0.z *= .5;
-			drawline3d(r1.x,r1.y,r1.z,r1.x+r0.x,r1.y+r0.y,r1.z+r0.z,whitecol);
+			drawline3d(r1.x,r1.y,r1.z,r1.x+r0.x,r1.y+r0.y,r1.z+r0.z,UIWHITE);
 		}
 #else
 		r0.x = -xpiv+ox-ipos.x-.5; if (corn[0].x == corn[1].x) r0.x += .5;
@@ -7299,7 +7379,7 @@ void doframe ()
 	}
 
 	if (dtotclk < messagetimeout)
-		print6x8((gdd.x>>1)-strlen(message)*3,S6M_TOPY,closestcol[262143],-1L,"%s",message);
+		print6x8((gdd.x>>1)-strlen(message)*3,S6M_TOPY,UIWHITE,-1L,"%s",message);
 
 	if (doscreencap)  //F12
 	{
@@ -7599,12 +7679,15 @@ skipdd:;
 					} else messagetimeout = 0.0;
 					break;
 				case 0x30: //B (set background color)
+					i = -1;
 					if ((!(((searchx-wx0[3])>>wz[3])&~31)) && (!(((searchy-wy0[3])>>wz[3])&~7)))
-						backgroundcol = (((searchy-wy0[3])>>wz[3])<<5) + ((searchx-wx0[3])>>wz[3]);
-					else if (vptr) backgroundcol = vptr->col;
-					backgroundcolrgb18 = ((((long)pal[backgroundcol].peRed  )>>2)<<12) +
-												((((long)pal[backgroundcol].peGreen)>>2)<< 6) +
-												((((long)pal[backgroundcol].peBlue )>>2)    );
+						i = (((searchy-wy0[3])>>wz[3])<<5) + ((searchx-wx0[3])>>wz[3]);
+					else if (vptr) i = vptr->col;
+					if ((unsigned long)i < 255) //255 = "no color"
+					{
+						backgroundcolrgb18 = (((long)fipalette[i*3])<<12) + (((long)fipalette[i*3+1])<<6) + ((long)fipalette[i*3+2]);
+						initpal(fipalette);
+					}
 					break;
 				case 0x1a: //[
 					if (i&0x30000) //{
